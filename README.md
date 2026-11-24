@@ -1,6 +1,6 @@
-# E-commerce — Projeto 3
+# E-commerce — Projeto 4
 
-API de e-commerce em Node.js, TypeScript e Express, organizada em camadas e com injeção de dependências (InversifyJS). Neste projeto, a aplicação e o banco rodam em containers com Docker Compose, o banco é o **PostgreSQL** e há uma rota nova, `GET /orders/:id`.
+API de e-commerce em Node.js, TypeScript e Express, organizada em camadas e com injeção de dependências (InversifyJS). A aplicação e o banco rodam em containers com Docker Compose, o banco é o **PostgreSQL** e há a rota `GET /orders/:id`. Neste projeto, a API não envia mais o e-mail: ela salva o pedido, publica numa fila do **Redis** e responde. Um **worker**, em outro container, lê a fila e envia o e-mail.
 
 ## Como rodar
 
@@ -12,11 +12,11 @@ Requisitos: **Docker** e **Docker Compose** (com o Docker Desktop aberto, no Win
    ```
    No PowerShell, use `Copy-Item .env.example .env`.
 
-2. Suba tudo (API e banco):
+2. Suba tudo (API, banco, Redis e worker):
    ```bash
    docker compose up --build
    ```
-   Na primeira vez, o build leva alguns minutos. A API está pronta quando o log mostrar `Server rodando em http://localhost:3000`.
+   Na primeira vez, o build leva alguns minutos. A API está pronta quando o log mostrar `Server rodando em http://localhost:3000`, e o worker, quando mostrar `Worker aguardando pedidos...`.
 
 3. Para parar:
    ```bash
@@ -28,7 +28,9 @@ Requisitos: **Docker** e **Docker Compose** (com o Docker Desktop aberto, no Win
 
 - O PostgreSQL **não publica porta** no host. Só a API (porta 3000) é acessível de fora; ela conversa com o banco pela rede interna do Compose, usando o serviço `banco`.
 - A API só inicia depois que o banco estiver pronto (`healthcheck` + `depends_on`).
-- Como o `DATABASE_URL` aponta para o serviço `banco`, o projeto deve ser executado pelo Docker Compose. Rodar `npm run dev` direto na máquina exige um PostgreSQL local e um `DATABASE_URL` com `localhost`.
+- O Redis também **não publica porta** no host; só a API e o worker o acessam, pela rede interna do Compose.
+- O worker usa a mesma imagem da API, mas executa `npm run worker`.
+- Como o `DATABASE_URL` e o `REDIS_URL` apontam para os serviços `banco` e `redis`, o projeto deve ser executado pelo Docker Compose. Rodar `npm run dev` direto na máquina exige um PostgreSQL e um Redis locais, com `DATABASE_URL` e `REDIS_URL` usando `localhost`.
 
 ## Rotas
 
@@ -63,7 +65,11 @@ PowerShell:
 Invoke-RestMethod -Method Post -Uri http://localhost:3000/orders -ContentType "application/json" -Body '{"customer":"cliente@ethereal.email","items":[{"productId":1,"quantity":1}],"paymentMethod":"pix"}'
 ```
 
-A resposta traz o `orderId` e, em `emailPreview`, um link do Ethereal com o e-mail de confirmação.
+A resposta traz só o `orderId`. O e-mail é enviado pelo worker, e o link do Ethereal com a confirmação aparece no log dele:
+
+```bash
+docker compose logs worker
+```
 
 Exemplo com cartão de crédito:
 
@@ -95,6 +101,24 @@ No PowerShell, use `curl.exe` (sem o alias do `Invoke-WebRequest`) para os coman
 2. Rode `docker compose down` e depois `docker compose up`.
 3. Busque o mesmo pedido com `GET /orders/<id>`: ele continua lá.
 
+### Testar a fila
+
+Com o worker parado, os pedidos esperam na fila e os e-mails saem quando ele volta:
+
+```bash
+docker compose stop worker
+# crie alguns pedidos (a API responde normalmente)
+docker compose exec redis redis-cli LLEN orders:email   # mostra quantos esperam
+docker compose start worker                              # os e-mails são enviados
+```
+
+Com dois workers, cada pedido é enviado uma vez só:
+
+```bash
+docker compose up -d --scale worker=2
+docker compose logs worker
+```
+
 ## Modos de execução (APP_ENV)
 
 O modo é escolhido pela variável `APP_ENV` no `.env`. As classes são trocadas apenas no `src/container/container.ts`, sem alterar services nem controllers.
@@ -102,7 +126,7 @@ O modo é escolhido pela variável `APP_ENV` no `.env`. As classes são trocadas
 | APP_ENV | E-mail | Pedidos |
 |---------|--------|---------|
 | `dev`   | Ethereal (envio de teste real, precisa de internet) | Salvos no PostgreSQL via Prisma |
-| `test`  | Impresso no console do servidor | Guardados em memória, somem ao reiniciar |
+| `test`  | Impresso no console do worker | Guardados em memória, somem ao reiniciar |
 
 Para trocar de modo, mude o `APP_ENV` no `.env`, rode `docker compose down` e suba de novo, pois a variável é lida uma vez na inicialização. A rota `GET /orders/:id` funciona nos dois modos. No modo `test`, os produtos ainda vêm do banco.
 
@@ -117,6 +141,13 @@ OrderController  ->  OrderService  ->  IOrderRepository
 - **Service:** contém a regra de negócio. Por exemplo, pedido inexistente é um erro (`OrderNotFoundError`).
 - **Repositório:** busca e grava os dados. Há duas implementações da mesma interface: `PrismaOrderRepository` (modo `dev`) e `InMemoryOrderRepository` (modo `test`).
 - **Container:** `src/container/container.ts` é o único lugar que conhece as classes concretas.
+- **Fila e worker:** o `OrderService` publica o pedido através da interface `IOrderQueue`; a implementação `RedisOrderQueue` grava numa lista do Redis (`LPUSH`). O `src/worker.ts` lê a lista (`BRPOP`) e chama o `NotificationService`. Nenhum arquivo de `services/` ou `controllers/` importa o Redis.
+
+  ```
+  OrderService -> IOrderQueue (Redis) -> worker -> NotificationService
+  ```
+
+  A decisão de usar lista, e não publish/subscribe, está em `docs/adr-001-fila-de-email.md`.
 
 A troca do SQLite pelo PostgreSQL mudou só a infraestrutura (`schema.prisma`, `.env` e Docker). Nenhum arquivo de `services/` ou `controllers/` foi alterado por causa dessa troca.
 
@@ -124,10 +155,12 @@ A troca do SQLite pelo PostgreSQL mudou só a infraestrutura (`schema.prisma`, `
 
 ```text
 .
-├── Dockerfile                       # Imagem da API (Node 20)
-├── compose.yaml                     # Serviços: banco (PostgreSQL) e api
+├── Dockerfile                       # Imagem da API e do worker (Node 20)
+├── compose.yaml                     # Serviços: banco (PostgreSQL), redis, api e worker
 ├── .dockerignore
 ├── .env.example                     # Modelo do .env (APP_ENV, credenciais e DATABASE_URL)
+├── docs/
+│   └── adr-001-fila-de-email.md     # Decisão: fila de e-mail com lista do Redis
 ├── prisma/
 │   ├── schema.prisma                # Modelos Product e Order (PostgreSQL)
 │   └── seed.ts                      # Cadastra os produtos iniciais
@@ -147,6 +180,9 @@ A troca do SQLite pelo PostgreSQL mudou só a infraestrutura (`schema.prisma`, `
     ├── services/                    # Regras do fluxo do pedido
     │   ├── OrderService.ts            # execute (cria o pedido) e findById (busca)
     │   └── NotificationService.ts     # Monta o e-mail de confirmação
+    ├── queues/                      # Fila de pedidos
+    │   ├── IOrderQueue.ts             # Contrato da fila (publish)
+    │   └── RedisOrderQueue.ts         # Publica o pedido numa lista do Redis (LPUSH)
     ├── providers/                   # Ferramentas externas (e-mail)
     │   ├── IMailProvider.ts           # Contrato de envio de e-mail
     │   ├── EtherealMailProvider.ts    # Modo dev: envio via Nodemailer (Ethereal)
@@ -166,5 +202,6 @@ A troca do SQLite pelo PostgreSQL mudou só a infraestrutura (`schema.prisma`, `
     ├── lib/
     │   └── logger.ts                  # Configuração do Winston
     ├── app.ts                         # Express e rotas
-    └── server.ts                      # Inicia o servidor
+    ├── server.ts                      # Inicia o servidor
+    └── worker.ts                      # Lê a fila (BRPOP) e envia os e-mails
 ```
