@@ -5,6 +5,7 @@
   "main": "src/server.ts",
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "worker": "tsx src/worker.ts",
     "start": "prisma db push && tsx prisma/seed.ts && tsx src/server.ts",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
@@ -16,6 +17,7 @@
     "express": "^4.21.0",
     "inversify": "^7.11.0",
     "nodemailer": "^7.0.11",
+    "redis": "^6.4.0",
     "reflect-metadata": "^0.2.2",
     "winston": "^3.11.0"
   },
