@@ -7,7 +7,7 @@ import { PaymentDetails } from '../payments/IPaymentMethod';
 import { PaymentMethodRegistry } from '../payments/PaymentMethodRegistry';
 import { IOrderRepository, Order, OrderItemData } from '../repositories/IOrderRepository';
 import { IProductRepository } from '../repositories/IProductRepository';
-import { NotificationService } from './NotificationService';
+import { IOrderQueue } from '../queues/IOrderQueue';
 import { OrderNotFoundError } from '../domain/OrderNotFoundError';
 
 export interface OrderItemInput {
@@ -24,7 +24,6 @@ export interface ProcessOrderInput {
 
 export interface ProcessOrderResult {
   orderId: number;
-  emailPreview: string | false;
 }
 
 @injectable()
@@ -34,7 +33,7 @@ export class OrderService {
     @inject(TYPES.ProductRepository) private readonly productRepository: IProductRepository,
     @inject(TYPES.ProductFactory) private readonly productFactory: ProductFactory,
     @inject(TYPES.PaymentMethodRegistry) private readonly paymentMethods: PaymentMethodRegistry,
-    @inject(TYPES.NotificationService) private readonly notificationService: NotificationService,
+    @inject(TYPES.OrderQueue) private readonly orderQueue: IOrderQueue,
   ) {}
 
   async execute(input: ProcessOrderInput): Promise<ProcessOrderResult> {
@@ -82,17 +81,15 @@ export class OrderService {
       status: 'confirmed',
     });
 
-    // 5. Notifica
-    const emailPreview = await this.notificationService.sendOrderConfirmation({
+    // 5. Publica na fila
+    await this.orderQueue.publish({
       orderId: order.id,
       customer,
       total: totalAmount,
       productNames: orderItems.map((item) => item.name),
     });
 
-    logger.info(`Email enviado: ${emailPreview}`);
-
-    return { orderId: order.id, emailPreview };
+    return { orderId: order.id };
   }
 
   async findById(id: number): Promise<Order> {

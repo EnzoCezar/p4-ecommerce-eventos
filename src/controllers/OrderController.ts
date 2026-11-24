@@ -24,7 +24,6 @@ export class OrderController {
       return res.json({
         message: 'Pedido processado com sucesso',
         orderId: result.orderId,
-        emailPreview: result.emailPreview,
       });
     } catch (error: any) {
       if (error instanceof BusinessError) {

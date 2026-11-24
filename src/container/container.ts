@@ -1,6 +1,6 @@
 import { Container } from 'inversify';
 import { PrismaClient } from '@prisma/client';
-
+import { RedisOrderQueue } from '../queues/RedisOrderQueue';
 import { TYPES } from './types';
 import { OrderController } from '../controllers/OrderController';
 import { ProductFactory } from '../domain/ProductFactory';
@@ -21,6 +21,7 @@ const appEnv = process.env.APP_ENV ?? 'dev';
 
 // Infraestrutura compartilhada
 container.bind(TYPES.PrismaClient).toConstantValue(new PrismaClient());
+container.bind(TYPES.OrderQueue).to(RedisOrderQueue).inSingletonScope();
 
 // Infraestrutura que muda conforme o modo
 if (appEnv === 'test') {
